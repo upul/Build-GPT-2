@@ -20,7 +20,7 @@ class DataLoader:
         self.tokens = torch.tensor(tokens, dtype=torch.long)
 
         print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch {len(self.tokens) // (batch_size * context_length)} tokens")
+        print(f"1 epoch {len(self.tokens) // (batch_size * context_length)} batches")
 
         self.current_position = 0
 
@@ -51,6 +51,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu = nn.GELU(approximate="tanh")
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -64,6 +65,7 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         self.c_attn = nn.Linear(config.n_embd, config.n_embd * 3)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
 
         # Registering my causal mask
         self.register_buffer(
@@ -90,7 +92,6 @@ class CausalSelfAttention(nn.Module):
         causal_scores = scores.masked_fill(self.bias[:T, :T], float("-inf"))
         scaled_causal_scores = causal_scores / math.sqrt(K.size(-1))
         attn_scores = F.softmax(scaled_causal_scores, dim=-1)  # [B, n_head, T, T]
-
         # [B, n_head, T, T] @ [B, n_heads, T, D // n_heads] => [B, n_heads, T, D // n_heads]
         head_output = attn_scores @ V
 
@@ -133,6 +134,23 @@ class GPT(nn.Module):
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.loss = nn.CrossEntropyLoss()
+
+        # GPT-2 weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight
+
+        # initialize parameters
+        self.apply(self._init_weight)
+
+    def _init_weight(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, "NANOGPT_SCALE_INIT"):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, target=None):
         B, T = idx.shape
@@ -226,9 +244,18 @@ if torch.cuda.is_available():
 elif hasattr(torch.backends, "mps") and torch.mps.is_available():
     device = "mps"
 
+# TODO:(Upul) manually setting the device to cpu
 print(f"using device: {device}")
 
-train_loader = DataLoader(batch_size=4, context_length=32)
+torch.manual_seed(1337)
+if device == "cuda":
+    torch.cuda.manual_seed(1337)
+elif device == "mps":
+    torch.mps.manual_seed(1337)
+
+
+train_loader = DataLoader(batch_size=2, context_length=1024)
+torch.set_float32_matmul_precision("high")
 num_return_sequences = 5
 max_length = 30
 
@@ -237,7 +264,7 @@ max_length = 30
 # get the logits
 model = GPT(GPTConfig())
 model.to(device=device)
-# logits, loss = model(x, y)
+model = torch.compile(model=model)
 
 # This is very important
 # We can assume that weights will be ~ randomly initialized
@@ -246,15 +273,27 @@ model.to(device=device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    t_0 = time.perf_counter()
     x, y = train_loader.next_batch()
     x = x.to(device=device)
     y = y.to(device=device)
 
     optimizer.zero_grad()
-    logits, loss = model(x, y)
+    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        logits, loss = model(x, y)
+
     loss.backward()
     optimizer.step()
-    print(f"step {i:>4d} | loss: {loss.item():>.4f}")
+    if device == "cuda":
+        torch.cuda.synchronize()
+    t_1 = time.perf_counter()
+    dt = (t_1 - t_0) * 1000
+    tokens_per_sec = (train_loader.batch_size * train_loader.context_length) / (
+        t_1 - t_0
+    )
+    print(
+        f"step {i:>4d} | loss: {loss.item():>.4f} | dt: {dt:>.2f} | tok/sec: {tokens_per_sec:>.4f}"
+    )
 
 end_time = time.perf_counter()
 print(f"Elapsed time: {(end_time - start_time):<.4f} seconds")

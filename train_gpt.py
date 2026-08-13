@@ -204,7 +204,16 @@ model.to(device=device)
 import tiktoken
 
 enc = tiktoken.get_encoding("gpt2")
-tokens = enc.encode("Hello, I am a language model,")
+with open("./input.txt", "r") as file:
+    text = file.read()
+tokens = enc.encode(text)
+B, T = 4, 32
+
+buf = torch.tensor(tokens[: B * T + 1])
+x = buf[:-1].view(B, T)
+y = buf[1:].view(B, T)
+
+# tokens = enc.encode("Hello, I am a language model,")
 
 tokens = torch.tensor(tokens, dtype=torch.long)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)

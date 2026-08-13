@@ -1,0 +1,16 @@
+[project]
+name = "build-gpt-2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "tiktoken>=0.13.0",
+    "torch>=2.13.0",
+    "transformers>=5.15.0",
+]
+
+[dependency-groups]
+dev = [
+    "jupyter>=1.1.1",
+]

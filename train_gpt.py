@@ -1,4 +1,5 @@
 import math
+import time
 from dataclasses import dataclass
 
 import torch
@@ -102,8 +103,9 @@ class GPT(nn.Module):
             }
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.loss = nn.CrossEntropyLoss()
 
-    def forward(self, idx):
+    def forward(self, idx, target=None):
         B, T = idx.shape
         assert T <= self.config.block_size, f"Can not forward sequences  of length: {T}"
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
@@ -116,7 +118,11 @@ class GPT(nn.Module):
 
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)  # [B, T, vocab_size]
-        return logits
+        logits = logits.view(B * T, -1)
+        if target is None:
+            return logits
+        target = target.view(-1)
+        return logits, self.loss(logits, target=target)
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -183,6 +189,7 @@ class GPT(nn.Module):
 
 
 # OK, I am going to detect the device available to me.
+start_time = time.perf_counter()
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
@@ -192,13 +199,11 @@ print(f"using device: {device}")
 
 num_return_sequences = 5
 max_length = 30
-print("Loading original GPT-2 weights")
+# print("Loading original GPT-2 weights")
 # model = GPT.from_pretrained("gpt2")
-model = GPT(GPTConfig())
-print("Wow, loading worked!")
+# model = GPT(GPTConfig())
+# print("Wow, loading worked!")
 
-model.eval()
-model.to(device=device)
 
 # -----
 import tiktoken
@@ -210,21 +215,41 @@ tokens = enc.encode(text)
 B, T = 4, 32
 
 buf = torch.tensor(tokens[: B * T + 1])
-x = buf[:-1].view(B, T)
-y = buf[1:].view(B, T)
+x = buf[:-1].view(B, T).to(device=device)
+y = buf[1:].view(B, T).to(device=device)
 
-# tokens = enc.encode("Hello, I am a language model,")
+# get the logits
+model = GPT(GPTConfig())
+model.to(device=device)
+# logits, loss = model(x, y)
 
-tokens = torch.tensor(tokens, dtype=torch.long)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-x = tokens.to("mps")
+# This is very important
+# We can assume that weights will be ~ randomly initialized
+# Also, our vocab size is 50257
+# So our initial loss ~ -ln(1/50257)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    print(f"step {i:>4d} | loss: {loss.item():>.4f}")
+
+end_time = time.perf_counter()
+print(f"Elapsed time: {(end_time - start_time):<.4f} seconds")
+import sys
+
+sys.exit()
+
 
 # OK, let's generate
-
 torch.manual_seed(42)
 torch.cuda.manual_seed(42)
 torch.mps.manual_seed(42)
 
+model.eval()
+model.to(device=device)
 # x -> [B, T]
 while x.size(1) < max_length:
     with torch.no_grad():

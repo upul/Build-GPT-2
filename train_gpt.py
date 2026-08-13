@@ -2,9 +2,38 @@ import math
 import time
 from dataclasses import dataclass
 
+import tiktoken
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+
+class DataLoader:
+    def __init__(self, batch_size, context_length):
+        self.batch_size = batch_size
+        self.context_length = context_length
+
+        self.enc = tiktoken.get_encoding("gpt2")
+        with open("./input.txt", "r") as file:
+            text = file.read()
+        tokens = self.enc.encode(text)
+        self.tokens = torch.tensor(tokens, dtype=torch.long)
+
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch {len(self.tokens) // (batch_size * context_length)} tokens")
+
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.batch_size, self.context_length
+        buf = self.tokens[self.current_position : self.current_position + B * T + 1]
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
+
+        self.current_position += B * T
+        if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_position = 0
+        return x, y
 
 
 @dataclass
@@ -118,7 +147,8 @@ class GPT(nn.Module):
 
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)  # [B, T, vocab_size]
-        logits = logits.view(B * T, -1)
+        # logits = logits.view(B * T, -1)
+        logits = logits.view(-1, self.config.vocab_size)
         if target is None:
             return logits
         target = target.view(-1)
@@ -195,28 +225,14 @@ if torch.cuda.is_available():
     device = "cuda"
 elif hasattr(torch.backends, "mps") and torch.mps.is_available():
     device = "mps"
+
 print(f"using device: {device}")
 
+train_loader = DataLoader(batch_size=4, context_length=32)
 num_return_sequences = 5
 max_length = 30
-# print("Loading original GPT-2 weights")
-# model = GPT.from_pretrained("gpt2")
-# model = GPT(GPTConfig())
-# print("Wow, loading worked!")
-
 
 # -----
-import tiktoken
-
-enc = tiktoken.get_encoding("gpt2")
-with open("./input.txt", "r") as file:
-    text = file.read()
-tokens = enc.encode(text)
-B, T = 4, 32
-
-buf = torch.tensor(tokens[: B * T + 1])
-x = buf[:-1].view(B, T).to(device=device)
-y = buf[1:].view(B, T).to(device=device)
 
 # get the logits
 model = GPT(GPTConfig())
@@ -230,6 +246,10 @@ model.to(device=device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    x, y = train_loader.next_batch()
+    x = x.to(device=device)
+    y = y.to(device=device)
+
     optimizer.zero_grad()
     logits, loss = model(x, y)
     loss.backward()

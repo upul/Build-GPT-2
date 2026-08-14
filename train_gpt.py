@@ -341,6 +341,16 @@ if device == "cuda":
 elif device == "mps":
     torch.mps.manual_seed(1337)
 
+# gradient accumulation
+total_batch_size = 4 * 2 * 1024  # 524288  # 2^19 ~ 0.5M batch size
+B = 2  # This is my micro-batch size
+T = 1024  # This is my context or sequence length
+assert total_batch_size % (B * T) == 0, (
+    "make sure the total batch_size is divisible by B * T"
+)
+grad_accum_steps = total_batch_size // (B * T)
+print(f"total desired batch size: {total_batch_size}")
+print(f"=> calculated gradient accumulated steps: {grad_accum_steps}")
 
 train_loader = DataLoader(batch_size=2, context_length=1024)
 torch.set_float32_matmul_precision("high")
@@ -366,17 +376,19 @@ optimizer = model.configure_optimizers(
 )
 for step in range(max_steps):
     t_0 = time.perf_counter()
-    x, y = train_loader.next_batch()
-    x = x.to(device=device)
-    y = y.to(device=device)
-
     optimizer.zero_grad()
-    with torch.autocast(device_type=device, dtype=torch.bfloat16):
-        logits, loss = model(x, y)
+    loss_accum = 0.0
+    for micro_step in range(grad_accum_steps):
+        x, y = train_loader.next_batch()
+        x = x.to(device=device)
+        y = y.to(device=device)
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            logits, loss = model(x, y)
+        loss = loss / grad_accum_steps
+        loss_accum += loss.detach()
+        loss.backward()
 
-    loss.backward()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
@@ -386,11 +398,11 @@ for step in range(max_steps):
         torch.cuda.synchronize()
     t_1 = time.perf_counter()
     dt = (t_1 - t_0) * 1000
-    tokens_per_sec = (train_loader.batch_size * train_loader.context_length) / (
-        t_1 - t_0
-    )
+    tokens_per_sec = (
+        train_loader.batch_size * train_loader.context_length * grad_accum_steps
+    ) / (t_1 - t_0)
     print(
-        f"step {step:>5d} | loss: {loss.item():>.5f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt:>.2f} | tok/sec: {tokens_per_sec:>.4f}"
+        f"step {step:>5d} | loss: {loss_accum.item():>9.5f} | lr: {lr:10.4e} | norm: {norm:8.4f} | dt: {dt:>8.2f} | tok/sec: {tokens_per_sec:>10.4f}"
     )
 
 end_time = time.perf_counter()

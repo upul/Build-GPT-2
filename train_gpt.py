@@ -10,9 +10,11 @@ from torch import nn
 
 
 class DataLoader:
-    def __init__(self, batch_size, context_length):
+    def __init__(self, batch_size, context_length, process_rank, num_processes):
         self.batch_size = batch_size
         self.context_length = context_length
+        self.process_rank = process_rank
+        self.num_processes = num_processes
 
         self.enc = tiktoken.get_encoding("gpt2")
         with open("./input.txt", "r") as file:
@@ -23,7 +25,7 @@ class DataLoader:
         print(f"loaded {len(self.tokens)} tokens")
         print(f"1 epoch {len(self.tokens) // (batch_size * context_length)} batches")
 
-        self.current_position = 0
+        self.current_position = process_rank * self.batch_size * self.context_length
 
     def next_batch(self):
         B, T = self.batch_size, self.context_length
@@ -33,7 +35,7 @@ class DataLoader:
 
         self.current_position += B * T
         if self.current_position + (B * T + 1) > len(self.tokens):
-            self.current_position = 0
+            self.current_position = self.process_rank * B * T
         return x, y
 
 
@@ -324,16 +326,39 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 
-# OK, I am going to detect the device available to me.
-start_time = time.perf_counter()
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.mps.is_available():
-    device = "mps"
+# run the training loop using distributed data parallel
+import os
 
-# TODO:(Upul) manually setting the device to cpu
-print(f"using device: {device}")
+import torch.distributed as dist
+from torch.distributed import destroy_process_group, init_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+ddp = int(os.environ.get("RANK", -1)) != -1
+if ddp:
+    assert torch.cuda.is_available(), "we need CUDA to run DDP"
+    init_process_group(backend="nccl")
+    ddp_rank = int(os.environ("RANK"))
+    ddp_local_rank = int(os.environ("LOCAL_RANK"))
+    ddp_world_size = int(os.environ("WORLD_SIZE"))
+    device = f"cuda:{ddp_local_rank}"
+    torch.cuda.set_device(device=device)
+    master_process = ddp_rank == 0
+else:
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+
+    # OK, I am going to detect the device available to me.
+    start_time = time.perf_counter()
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.mps.is_available():
+        device = "mps"
+
+    # TODO:(Upul) manually setting the device to cpu
+    print(f"using device: {device}")
 
 torch.manual_seed(1337)
 if device == "cuda":
@@ -342,27 +367,35 @@ elif device == "mps":
     torch.mps.manual_seed(1337)
 
 # gradient accumulation
-total_batch_size = 524288  # 524288  # 2^19 ~ 0.5M batch size
+total_batch_size = 2 * 2 * 1024  # 524288  # 2^19 ~ 0.5M batch size
 B = 2  # This is my micro-batch size
 T = 1024  # This is my context or sequence length
-assert total_batch_size % (B * T) == 0, (
-    "make sure the total batch_size is divisible by B * T"
+assert total_batch_size % (B * T * ddp_world_size) == 0, (
+    "make sure the total batch_size is divisible by B * T ddp_world_size"
 )
-grad_accum_steps = total_batch_size // (B * T)
-print(f"total desired batch size: {total_batch_size}")
-print(f"=> calculated gradient accumulated steps: {grad_accum_steps}")
+grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
+if master_process:
+    print(f"total desired batch size: {total_batch_size}")
+    print(f"=> calculated gradient accumulated steps: {grad_accum_steps}")
 
-train_loader = DataLoader(batch_size=2, context_length=1024)
+train_loader = DataLoader(
+    batch_size=2,
+    context_length=1024,
+    process_rank=ddp_rank,
+    num_processes=ddp_world_size,
+)
 torch.set_float32_matmul_precision("high")
 num_return_sequences = 5
 max_length = 30
 
 # -----
 
-# get the logits
+# create the model
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device=device)
 model = torch.compile(model=model)
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
 
 # This is very important
 # We can assume that weights will be ~ randomly initialized
@@ -386,7 +419,11 @@ for step in range(max_steps):
             logits, loss = model(x, y)
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
+        if ddp:
+            model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
         loss.backward()
+    if ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     lr = get_lr(step)
@@ -401,9 +438,13 @@ for step in range(max_steps):
     tokens_per_sec = (
         train_loader.batch_size * train_loader.context_length * grad_accum_steps
     ) / (t_1 - t_0)
-    print(
-        f"step {step:>5d} | loss: {loss_accum.item():>9.5f} | lr: {lr:10.4e} | norm: {norm:8.4f} | dt: {dt:>8.2f} | tok/sec: {tokens_per_sec:>10.4f}"
-    )
+    if master_process:
+        print(
+            f"step {step:>5d} | loss: {loss_accum.item():>9.5f} | lr: {lr:10.4e} | norm: {norm:8.4f} | dt: {dt:>8.2f} | tok/sec: {tokens_per_sec:>10.4f}"
+        )
+
+if ddp:
+    destroy_process_group()
 
 end_time = time.perf_counter()
 print(f"Elapsed time: {(end_time - start_time):<.4f} seconds")

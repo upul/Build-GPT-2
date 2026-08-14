@@ -342,7 +342,7 @@ elif device == "mps":
     torch.mps.manual_seed(1337)
 
 # gradient accumulation
-total_batch_size = 4 * 2 * 1024  # 524288  # 2^19 ~ 0.5M batch size
+total_batch_size = 524288  # 524288  # 2^19 ~ 0.5M batch size
 B = 2  # This is my micro-batch size
 T = 1024  # This is my context or sequence length
 assert total_batch_size % (B * T) == 0, (

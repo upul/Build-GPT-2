@@ -367,8 +367,8 @@ elif device == "mps":
     torch.mps.manual_seed(1337)
 
 # gradient accumulation
-total_batch_size = 2 * 2 * 1024  # 524288  # 2^19 ~ 0.5M batch size
-B = 2  # This is my micro-batch size
+total_batch_size = 524288  # 2^19 ~ 0.5M batch size
+B = 16  # This is my micro-batch size
 T = 1024  # This is my context or sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, (
     "make sure the total batch_size is divisible by B * T ddp_world_size"
@@ -396,6 +396,7 @@ model.to(device=device)
 model = torch.compile(model=model)
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module if ddp else model  #
 
 # This is very important
 # We can assume that weights will be ~ randomly initialized
@@ -404,7 +405,7 @@ if ddp:
 
 # Let's optimize it
 # optimizer = torch.optim.AdamW(model.parameters(), lr=6e-4, betas=(0.9, 0.95), eps=1e-8)
-optimizer = model.configure_optimizers(
+optimizer = raw_model.configure_optimizers(
     weight_decay=0.1, learning_rate=6e-4, device=device
 )
 for step in range(max_steps):

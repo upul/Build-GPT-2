@@ -337,9 +337,9 @@ ddp = int(os.environ.get("RANK", -1)) != -1
 if ddp:
     assert torch.cuda.is_available(), "we need CUDA to run DDP"
     init_process_group(backend="nccl")
-    ddp_rank = int(os.environ("RANK"))
-    ddp_local_rank = int(os.environ("LOCAL_RANK"))
-    ddp_world_size = int(os.environ("WORLD_SIZE"))
+    ddp_rank = int(os.environ["RANK"])
+    ddp_local_rank = int(os.environ["LOCAL_RANK"])
+    ddp_world_size = int(os.environ["WORLD_SIZE"])
     device = f"cuda:{ddp_local_rank}"
     torch.cuda.set_device(device=device)
     master_process = ddp_rank == 0

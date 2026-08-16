@@ -339,7 +339,7 @@ elif device == "mps":
 
 # gradient accumulation
 total_batch_size = 524288  # 2^19 ~ 0.5M batch size
-B = 32  # This is my micro-batch size
+B = 16  # This is my micro-batch size
 T = 1024  # This is my context or sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, (
     "make sure the total batch_size is divisible by B * T ddp_world_size"

@@ -33,8 +33,8 @@ class DataLoader:
         x = buf[:-1].view(B, T)
         y = buf[1:].view(B, T)
 
-        self.current_position += B * T
-        if self.current_position + (B * T + 1) > len(self.tokens):
+        self.current_position += B * T * self.num_processes
+        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
             self.current_position = self.process_rank * B * T
         return x, y
 
@@ -273,40 +273,6 @@ class GPT(nn.Module):
         )
         return optimizer
 
-    # def configure_optimizers(self, weight_decay, learning_rate, device):
-    #     # we start with collecting parameters that require gradient
-    #     param_dict = {
-    #         name: value
-    #         for name, value in self.named_parameters()
-    #         if value.requires_grad
-    #     }
-
-    #     # select parameters that requires weight decay
-    #     decay_parameters = [
-    #         param for _, param in param_dict.items() if param.dim() >= 2
-    #     ]
-    #     non_decay_parameters = [
-    #         param for _, param in param_dict.items() if param.dim() < 2
-    #     ]
-    #     optim_groups = [
-    #         {"params": decay_parameters, "weight_decay": weight_decay},
-    #         {"params": non_decay_parameters, "weight_decay": 0.0},
-    #     ]
-    #     num_decay_parameters = sum(p.numel() for p in decay_parameters)
-    #     num_non_decay_parameters = sum(p.numel() for p in non_decay_parameters)
-
-    #     print(
-    #         f"num decayed parameter tensors: {len(decay_parameters)} with {num_decay_parameters:,} parameters"
-    #     )
-    #     print(
-    #         f"num non-decayed parameter tensors: {len(non_decay_parameters)} with {num_non_decay_parameters:,} parameters"
-    #     )
-    #     # in modern PyTorch versions fused option is available
-    #     optimizer = torch.optim.AdamW(
-    #         optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=True
-    #     )
-    #     return optimizer
-
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
@@ -336,12 +302,17 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 ddp = int(os.environ.get("RANK", -1)) != -1
 if ddp:
     assert torch.cuda.is_available(), "we need CUDA to run DDP"
-    init_process_group(backend="nccl")
+
     ddp_rank = int(os.environ["RANK"])
     ddp_local_rank = int(os.environ["LOCAL_RANK"])
     ddp_world_size = int(os.environ["WORLD_SIZE"])
+
     device = f"cuda:{ddp_local_rank}"
+    # select the GPU before initializing NCCL
     torch.cuda.set_device(device=device)
+
+    init_process_group(backend="nccl")
+
     master_process = ddp_rank == 0
 else:
     ddp_rank = 0
@@ -361,7 +332,7 @@ else:
     print(f"using device: {device}")
 
 torch.manual_seed(1337)
-if device == "cuda":
+if device.startswith("cuda"):
     torch.cuda.manual_seed(1337)
 elif device == "mps":
     torch.mps.manual_seed(1337)
@@ -379,8 +350,8 @@ if master_process:
     print(f"=> calculated gradient accumulated steps: {grad_accum_steps}")
 
 train_loader = DataLoader(
-    batch_size=2,
-    context_length=1024,
+    batch_size=B,
+    context_length=T,
     process_rank=ddp_rank,
     num_processes=ddp_world_size,
 )
@@ -391,11 +362,21 @@ max_length = 30
 # -----
 
 # create the model
+print(
+    f"[rank {ddp_rank}] local_rank={ddp_local_rank} device={device}",
+    flush=True,
+)
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device=device)
-model = torch.compile(model=model)
+print(f"[rank {ddp_rank}] model on GPU", flush=True)
+
+# model = torch.compile(model=model)
+
 if ddp:
+    print(f"[rank {ddp_rank}] entering DDP constructor", flush=True)
     model = DDP(model, device_ids=[ddp_local_rank])
+    print(f"[rank {ddp_rank}] DDP ready", flush=True)
+
 raw_model = model.module if ddp else model  #
 
 # This is very important
@@ -405,23 +386,28 @@ raw_model = model.module if ddp else model  #
 
 # Let's optimize it
 # optimizer = torch.optim.AdamW(model.parameters(), lr=6e-4, betas=(0.9, 0.95), eps=1e-8)
+print(f"[rank {ddp_rank}] creating optimizer", flush=True)
 optimizer = raw_model.configure_optimizers(
     weight_decay=0.1, learning_rate=6e-4, device=device
 )
+print(f"[rank {ddp_rank}] optimizer ready", flush=True)
+
 for step in range(max_steps):
     t_0 = time.perf_counter()
     optimizer.zero_grad()
     loss_accum = 0.0
+    device_type = "cuda" if device.startswith("cuda") else device
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()
         x = x.to(device=device)
         y = y.to(device=device)
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        if ddp:
+            model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
+
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
-        if ddp:
-            model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
         loss.backward()
     if ddp:
         dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
@@ -432,16 +418,20 @@ for step in range(max_steps):
         param_group["lr"] = lr
 
     optimizer.step()
-    if device == "cuda":
+    if device.startswith("cuda"):
         torch.cuda.synchronize()
     t_1 = time.perf_counter()
-    dt = (t_1 - t_0) * 1000
-    tokens_per_sec = (
-        train_loader.batch_size * train_loader.context_length * grad_accum_steps
-    ) / (t_1 - t_0)
+    dt = t_1 - t_0
+    tokens_processed = (
+        train_loader.batch_size
+        * train_loader.context_length
+        * grad_accum_steps
+        * ddp_world_size
+    )
+    tokens_per_sec = tokens_processed / dt
     if master_process:
         print(
-            f"step {step:>5d} | loss: {loss_accum.item():>9.5f} | lr: {lr:10.4e} | norm: {norm:8.4f} | dt: {dt:>8.2f} | tok/sec: {tokens_per_sec:>10.4f}"
+            f"step {step:>5d} | loss: {loss_accum.item():>9.5f} | lr: {lr:10.4e} | norm: {norm:8.4f} | dt: {dt * 1000:>8.2f}ms | tok/sec: {tokens_per_sec:>10.4f}"
         )
 
 if ddp:

@@ -1,40 +1,68 @@
 import inspect
 import math
+import os
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import tiktoken
 import torch
 import torch.nn.functional as F
 from torch import nn
 
+from prepare_dataset import split
+
+
+def load_tokens(filename):
+    npt = np.load(filename)
+    ptt = torch.tensor(npt, dtype=torch.long)
+    return ptt
+
 
 class DataLoader:
-    def __init__(self, batch_size, context_length, process_rank, num_processes):
+    def __init__(
+        self,
+        batch_size,
+        context_length,
+        process_rank,
+        num_processes,
+        master_process,
+        split,
+        data_root,
+    ):
         self.batch_size = batch_size
         self.context_length = context_length
         self.process_rank = process_rank
         self.num_processes = num_processes
+        assert split in {"train", "val"}
 
-        self.enc = tiktoken.get_encoding("gpt2")
-        with open("./input.txt", "r") as file:
-            text = file.read()
-        tokens = self.enc.encode(text)
-        self.tokens = torch.tensor(tokens, dtype=torch.long)
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if split in s]
+        shards = sorted(shards)
+        shards = [os.path.join(data_root, s) for s in shards]
+        self.shards = shards
+        assert len(shards) > 0, f"no shards found for split {split}"
+        if master_process:
+            print(f"found {len(shards)} shards for split {split}")
+        self.reset()
 
-        print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch {len(self.tokens) // (batch_size * context_length)} batches")
-
-        self.current_position = process_rank * self.batch_size * self.context_length
+    def reset(self):
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
+        self.current_position = (
+            self.process_rank * self.batch_size * self.context_length
+        )
 
     def next_batch(self):
         B, T = self.batch_size, self.context_length
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
         x = buf[:-1].view(B, T)
         y = buf[1:].view(B, T)
-
         self.current_position += B * T * self.num_processes
+
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = self.process_rank * B * T
         return x, y
 
@@ -276,8 +304,8 @@ class GPT(nn.Module):
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+warmup_steps = 715  # warmup over 375M tokens -> 375*10**6 / 2**19 -> 715
+max_steps = 1907  # 1B tokens / 0.5M batch size -> 10^9 / 2**19
 
 
 def get_lr(it):
@@ -354,6 +382,18 @@ train_loader = DataLoader(
     context_length=T,
     process_rank=ddp_rank,
     num_processes=ddp_world_size,
+    master_process=master_process,
+    split="train",
+    data_root=".",
+)
+val_loader = DataLoader(
+    batch_size=B,
+    context_length=T,
+    process_rank=ddp_rank,
+    num_processes=ddp_world_size,
+    master_process=master_process,
+    split="val",
+    data_root=".",
 )
 torch.set_float32_matmul_precision("high")
 num_return_sequences = 5
@@ -394,6 +434,28 @@ print(f"[rank {ddp_rank}] optimizer ready", flush=True)
 
 for step in range(max_steps):
     t_0 = time.perf_counter()
+    # once in a while evaluate the validation loss
+    if step % 100 == 0:
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_loss_accum = 0.0
+            val_loss_steps = 20
+            for _ in range(val_loss_steps):
+                x, y = val_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    logits, loss = model(x, y)
+
+                loss = loss / val_loss_steps
+                val_loss_accum += loss.detach()
+        if ddp:
+            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+        if master_process:
+            print(f"validation loss: {val_loss_accum.item():.4f}")
+
+    # This is my training loop
+    model.train()
     optimizer.zero_grad()
     loss_accum = 0.0
     device_type = "cuda" if device.startswith("cuda") else device

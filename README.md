@@ -4,6 +4,16 @@ A compact GPT-2 124M training stack written in PyTorch, built to understand the 
 
 The implementation is inspired by Andrej Karpathy's `build-nanogpt` walkthrough and reorganized here as a small engineering codebase with explicit model, data, distributed, optimizer, scheduler, generation, and test modules.
 
+<p align="center">
+  <img src="assets/logo.png" alt="Build-GPT-2 logo" width="260">
+</p>
+
+<h1 align="center">Build-GPT-2</h1>
+
+<p align="center">
+  GPT-2 124M from scratch in PyTorch, trained on FineWeb-Edu with multi-GPU DDP.
+</p>
+
 ## What this project demonstrates
 
 - GPT-2-style decoder-only Transformer implemented from scratch

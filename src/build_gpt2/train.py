@@ -1,0 +1,179 @@
+from dataclasses import dataclass
+from pathlib import Path
+import time
+
+import tiktoken
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from .data import ShardedTokenLoader
+from .distributed import DistributedContext
+from .generation import generate_top_k
+from .model import GPT, GPTConfig
+from .optim import configure_adamw
+from .scheduler import cosine_warmup_lr
+
+
+@dataclass
+class TrainConfig:
+    data_root: Path
+    total_batch_size: int = 524_288
+    micro_batch_size: int = 16
+    context_length: int = 1024
+    max_lr: float = 6e-4
+    min_lr: float = 6e-5
+    warmup_steps: int = 100
+    max_steps: int = 1907
+    weight_decay: float = 0.1
+    grad_clip: float = 1.0
+    val_interval: int = 100
+    val_steps: int = 20
+    generate_interval: int = 250
+    seed: int = 1337
+
+
+def evaluate(
+    model,
+    loader: ShardedTokenLoader,
+    *,
+    val_steps: int,
+    ctx: DistributedContext,
+) -> torch.Tensor:
+    model.eval()
+    loader.reset()
+    loss_accum = torch.zeros((), device=ctx.device)
+    with torch.no_grad():
+        for _ in range(val_steps):
+            x, y = loader.next_batch()
+            x, y = x.to(ctx.device), y.to(ctx.device)
+            with torch.autocast(device_type=ctx.device_type, dtype=torch.bfloat16):
+                _, loss = model(x, y)
+            loss_accum += loss.detach() / val_steps
+
+    if ctx.ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+    return loss_accum
+
+
+def train(config: TrainConfig, ctx: DistributedContext) -> None:
+    torch.manual_seed(config.seed)
+    if ctx.device.startswith("cuda"):
+        torch.cuda.manual_seed(config.seed)
+    elif ctx.device == "mps":
+        torch.mps.manual_seed(config.seed)
+
+    if config.total_batch_size % (
+        config.micro_batch_size * config.context_length * ctx.world_size
+    ):
+        raise ValueError("total_batch_size must be divisible by B*T*world_size")
+
+    grad_accum_steps = config.total_batch_size // (
+        config.micro_batch_size * config.context_length * ctx.world_size
+    )
+    if ctx.master:
+        print(f"using device: {ctx.device}")
+        print(f"total desired batch size: {config.total_batch_size}")
+        print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+
+    train_loader = ShardedTokenLoader(
+        config.micro_batch_size,
+        config.context_length,
+        ctx.rank,
+        ctx.world_size,
+        "train",
+        config.data_root,
+        ctx.master,
+    )
+    val_loader = ShardedTokenLoader(
+        config.micro_batch_size,
+        config.context_length,
+        ctx.rank,
+        ctx.world_size,
+        "val",
+        config.data_root,
+        ctx.master,
+    )
+
+    torch.set_float32_matmul_precision("high")
+    model = GPT(GPTConfig(block_size=config.context_length, vocab_size=50304)).to(ctx.device)
+    if ctx.ddp:
+        model = DDP(model, device_ids=[ctx.local_rank])
+    raw_model = model.module if ctx.ddp else model
+
+    optimizer = configure_adamw(
+        raw_model,
+        weight_decay=config.weight_decay,
+        learning_rate=config.max_lr,
+        device=ctx.device,
+    )
+    tokenizer = tiktoken.get_encoding("gpt2")
+
+    for step in range(config.max_steps):
+        last_step = step == config.max_steps - 1
+
+        if step % config.val_interval == 0:
+            val_loss = evaluate(model, val_loader, val_steps=config.val_steps, ctx=ctx)
+            if ctx.master:
+                print(f"validation loss: {val_loss.item():.4f}")
+
+        # Use the raw model for master-only generation so no DDP collectives are required.
+        if ctx.master and ((step > 0 and step % config.generate_interval == 0) or last_step):
+            raw_model.eval()
+            generated = generate_top_k(
+                raw_model,
+                tokenizer.encode("Hello, I'm a language model,"),
+                num_return_sequences=3,
+                max_length=32,
+                top_k=50,
+                device=ctx.device,
+                device_type=ctx.device_type,
+                seed=42,
+            )
+            for sample_idx in range(generated.size(0)):
+                decoded = tokenizer.decode(generated[sample_idx].tolist())
+                print(f"sample {sample_idx}: {decoded}")
+
+        model.train()
+        optimizer.zero_grad()
+        loss_accum = torch.zeros((), device=ctx.device)
+        train_start = time.perf_counter()
+
+        for micro_step in range(grad_accum_steps):
+            x, y = train_loader.next_batch()
+            x, y = x.to(ctx.device), y.to(ctx.device)
+            if ctx.ddp:
+                model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
+
+            with torch.autocast(device_type=ctx.device_type, dtype=torch.bfloat16):
+                _, loss = model(x, y)
+            loss = loss / grad_accum_steps
+            loss_accum += loss.detach()
+            loss.backward()
+
+        if ctx.ddp:
+            dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+        lr = cosine_warmup_lr(
+            step,
+            max_lr=config.max_lr,
+            min_lr=config.min_lr,
+            warmup_steps=config.warmup_steps,
+            max_steps=config.max_steps,
+        )
+        for group in optimizer.param_groups:
+            group["lr"] = lr
+        optimizer.step()
+
+        if ctx.device.startswith("cuda"):
+            torch.cuda.synchronize()
+        dt = time.perf_counter() - train_start
+        tokens_per_sec = config.total_batch_size / dt
+
+        if ctx.master:
+            print(
+                f"step {step:>5d} | loss: {loss_accum.item():>9.5f} | "
+                f"lr: {lr:10.4e} | norm: {norm:8.4f} | "
+                f"dt: {dt * 1000:>8.2f}ms | tok/sec: {tokens_per_sec:>10.4f}"
+            )

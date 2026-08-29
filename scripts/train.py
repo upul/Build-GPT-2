@@ -14,6 +14,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--micro-batch-size", type=int, default=16)
     parser.add_argument("--context-length", type=int, default=1024)
     parser.add_argument("--total-batch-size", type=int, default=524_288)
+    parser.add_argument(
+        "--resume", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument("--checkpoint-interval", type=int, default=250)
     return parser.parse_args()
 
 
@@ -29,6 +33,8 @@ def main() -> None:
                 micro_batch_size=args.micro_batch_size,
                 context_length=args.context_length,
                 total_batch_size=args.total_batch_size,
+                checkpoint_interval=args.checkpoint_interval,
+                resume=args.resume,
             ),
             ctx,
         )

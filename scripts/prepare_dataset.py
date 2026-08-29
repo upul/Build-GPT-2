@@ -4,6 +4,7 @@ from datasets import load_dataset
 
 SHARD_SIZE = 100_000_000
 MAX_TOKENS = 1_100_000_000  # 100M validation + 1B training
+DATA_FOLDER = "./data"
 
 dataset = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
 enc = tiktoken.get_encoding("gpt2")
@@ -64,7 +65,7 @@ for data in dataset:
 
 if token_count > 0:
     split = "val" if shard_index == 0 else "train"
-    filename = f"fineweb_{split}_{shard_index:06d}.npy"
+    filename = f"{DATA_FOLDER}/fineweb_{split}_{shard_index:06d}.npy"
 
     np.save(filename, shard[:token_count])
 

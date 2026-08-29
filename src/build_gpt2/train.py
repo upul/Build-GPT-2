@@ -1,12 +1,13 @@
-from dataclasses import dataclass
-from pathlib import Path
 import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import tiktoken
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from .checkpoint import load, save
 from .data import ShardedTokenLoader
 from .distributed import DistributedContext
 from .generation import generate_top_k
@@ -30,6 +31,9 @@ class TrainConfig:
     val_interval: int = 100
     val_steps: int = 20
     generate_interval: int = 250
+    resume: bool = False
+    checkpoint_interval: int = 250
+    checkpoint_dir: str = "./checkpoints"
     seed: int = 1337
 
 
@@ -96,7 +100,8 @@ def train(config: TrainConfig, ctx: DistributedContext) -> None:
     )
 
     torch.set_float32_matmul_precision("high")
-    model = GPT(GPTConfig(block_size=config.context_length, vocab_size=50304)).to(ctx.device)
+    gpt_config = GPTConfig(block_size=config.context_length, vocab_size=50304)
+    model = GPT(gpt_config).to(ctx.device)
     if ctx.ddp:
         model = DDP(model, device_ids=[ctx.local_rank])
     raw_model = model.module if ctx.ddp else model
@@ -108,8 +113,15 @@ def train(config: TrainConfig, ctx: DistributedContext) -> None:
         device=ctx.device,
     )
     tokenizer = tiktoken.get_encoding("gpt2")
+    start = 0
+    if config.resume:
+        start = load(
+            raw_model, optimizer, train_loader, config.checkpoint_dir, ctx.device
+        )
+        if ctx.master:
+            print(f"Resuming the training at step: {start}")
 
-    for step in range(config.max_steps):
+    for step in range(start, config.max_steps):
         last_step = step == config.max_steps - 1
 
         if step % config.val_interval == 0:
@@ -118,7 +130,9 @@ def train(config: TrainConfig, ctx: DistributedContext) -> None:
                 print(f"validation loss: {val_loss.item():.4f}")
 
         # Use the raw model for master-only generation so no DDP collectives are required.
-        if ctx.master and ((step > 0 and step % config.generate_interval == 0) or last_step):
+        if ctx.master and (
+            (step > 0 and step % config.generate_interval == 0) or last_step
+        ):
             raw_model.eval()
             generated = generate_top_k(
                 raw_model,
@@ -176,4 +190,19 @@ def train(config: TrainConfig, ctx: DistributedContext) -> None:
                 f"step {step:>5d} | loss: {loss_accum.item():>9.5f} | "
                 f"lr: {lr:10.4e} | norm: {norm:8.4f} | "
                 f"dt: {dt * 1000:>8.2f}ms | tok/sec: {tokens_per_sec:>10.4f}"
+            )
+
+        if (
+            (step > 0 and step % config.checkpoint_interval == 0) or last_step
+        ) and ctx.master:
+            print(f"saving checkpoint at {step} step")
+            save(
+                step=step,
+                model=raw_model,
+                optimizer=optimizer,
+                train_cfg=asdict(config),
+                gpt_config=asdict(gpt_config),
+                curr_shard=train_loader.current_shard,
+                curr_position=train_loader.current_position,
+                checkpoint_dir=config.checkpoint_dir,
             )

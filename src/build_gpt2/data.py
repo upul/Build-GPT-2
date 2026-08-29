@@ -52,10 +52,20 @@ class ShardedTokenLoader:
     def global_stride(self) -> int:
         return self.tokens_per_rank_batch * self.num_processes
 
-    def reset(self) -> None:
-        self.current_shard = 0
+    def reset(
+        self, current_shard: int = 0, current_position: int | None = None
+    ) -> None:
+        if current_shard >= len(self.shards):
+            raise ValueError(
+                f"Invalid shard number: {current_shard}. Max allowable: {len(self.shards)}"
+            )
+
+        self.current_shard = current_shard
         self.tokens = load_tokens(self.shards[self.current_shard])
-        self.current_position = self.process_rank * self.tokens_per_rank_batch
+        if current_position is None:
+            self.current_position = self.process_rank * self.tokens_per_rank_batch
+        else:
+            self.current_position = current_position
 
     def next_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
         b, t = self.batch_size, self.context_length

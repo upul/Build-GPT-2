@@ -1,6 +1,8 @@
 import argparse
+from ast import arg
 from pathlib import Path
 
+import wandb
 from build_gpt2.distributed import cleanup_distributed, setup_distributed
 from build_gpt2.train import TrainConfig, train
 
@@ -19,13 +21,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-interval", type=int, default=250)
     parser.add_argument("--hellaswag-interval", type=int, default=0)
     parser.add_argument("--hellaswag-limit", type=int, default=None)
+
+    parser.add_argument("--wandb-project", type=str, default=None)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     ctx = setup_distributed()
+    run = None
     try:
+        if ctx.master and args.wandb_project is not None:
+            run = wandb.init(project=args.wandb_project)
+
         train(
             TrainConfig(
                 data_root=args.data_root,
@@ -40,8 +48,11 @@ def main() -> None:
                 resume=args.resume,
             ),
             ctx,
+            run,
         )
     finally:
+        if ctx.master and run is not None:
+            wandb.finish()
         cleanup_distributed(ctx)
 
 

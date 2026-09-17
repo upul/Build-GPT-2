@@ -220,3 +220,6 @@ __marimo__/
 
 # local experiments
 scratch/
+
+# ignore local experiment folder
+wandb

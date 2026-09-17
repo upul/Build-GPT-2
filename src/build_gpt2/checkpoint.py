@@ -40,11 +40,16 @@ def save(
 
 def load(
     model,
-    optimizer,
-    token_loader: ShardedTokenLoader,
     checkpoint_dir: str,
     device: str,
+    optimizer=None,
+    token_loader: ShardedTokenLoader | None = None,
 ):
+    """Restore a checkpoint in place and return the step to resume from.
+
+    ``optimizer`` and ``token_loader`` are optional so an evaluation-only caller
+    can load weights without constructing them.
+    """
     checkpoints = list(Path(checkpoint_dir).glob("*.pt"))
     if len(checkpoints) == 0:
         raise FileNotFoundError(
@@ -61,9 +66,12 @@ def load(
             "The loaded GPT configuration doesn't match with model's configuration"
         )
     model.load_state_dict(cp["model"])
-    optimizer.load_state_dict(cp["optimizer"])
-    token_loader.reset(
-        current_shard=int(cp["curr_shard"]), current_position=int(cp["curr_position"])
-    )
+    if optimizer is not None:
+        optimizer.load_state_dict(cp["optimizer"])
+    if token_loader is not None:
+        token_loader.reset(
+            current_shard=int(cp["curr_shard"]),
+            current_position=int(cp["curr_position"]),
+        )
 
     return cp["step"] + 1

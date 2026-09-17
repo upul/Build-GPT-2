@@ -11,6 +11,7 @@ from .checkpoint import load, save
 from .data import ShardedTokenLoader
 from .distributed import DistributedContext
 from .generation import generate_top_k
+from .hellaswag import HellaSwagEval
 from .model import GPT, GPTConfig
 from .optim import configure_adamw
 from .scheduler import cosine_warmup_lr
@@ -33,6 +34,8 @@ class TrainConfig:
     generate_interval: int = 250
     resume: bool = False
     checkpoint_interval: int = 250
+    hellaswag_interval: int = 0
+    hellaswag_limit: int | None = None
     checkpoint_dir: str = "./checkpoints"
     seed: int = 1337
 
@@ -99,9 +102,18 @@ def train(config: TrainConfig, ctx: DistributedContext) -> None:
         ctx.master,
     )
 
+    # setting up Hellaswag evaluation
+    hellaswag_eval = None
+    if ctx.master and config.hellaswag_interval > 0:
+        hellaswag_eval = HellaSwagEval(num_evaluations=config.hellaswag_limit)
+
     torch.set_float32_matmul_precision("high")
     gpt_config = GPTConfig(block_size=config.context_length, vocab_size=50304)
     model = GPT(gpt_config).to(ctx.device)
+    if ctx.master:
+        num_parameters = sum([p.numel() for p in model.parameters()])
+        print(f"number of parameters: {num_parameters / 1e6} M")
+
     if ctx.ddp:
         model = DDP(model, device_ids=[ctx.local_rank])
     raw_model = model.module if ctx.ddp else model
@@ -116,7 +128,11 @@ def train(config: TrainConfig, ctx: DistributedContext) -> None:
     start = 0
     if config.resume:
         start = load(
-            raw_model, optimizer, train_loader, config.checkpoint_dir, ctx.device
+            model=raw_model,
+            checkpoint_dir=config.checkpoint_dir,
+            device=ctx.device,
+            optimizer=optimizer,
+            token_loader=train_loader,
         )
         if ctx.master:
             print(f"Resuming the training at step: {start}")
@@ -148,6 +164,19 @@ def train(config: TrainConfig, ctx: DistributedContext) -> None:
                 decoded = tokenizer.decode(generated[sample_idx].tolist())
                 print(f"sample {sample_idx}: {decoded}")
 
+        # This is the Hellaswag Evaluation loop.
+        if (
+            ctx.master
+            and (hellaswag_eval is not None)
+            and ((step > 0 and step % config.hellaswag_interval == 0) or last_step)
+        ):
+            eval_result = hellaswag_eval.evaluate(
+                raw_model, tokenizer, ctx.device, verbose=False
+            )
+            # TODO: (We need to correctly log the performance)
+            print(f"hellaswag eval result: {eval_result}")
+
+        # Now we start training
         model.train()
         optimizer.zero_grad()
         loss_accum = torch.zeros((), device=ctx.device)

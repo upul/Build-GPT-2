@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 from pathlib import Path
 
@@ -18,6 +17,8 @@ def parse_args() -> argparse.Namespace:
         "--resume", action=argparse.BooleanOptionalAction, default=False
     )
     parser.add_argument("--checkpoint-interval", type=int, default=250)
+    parser.add_argument("--hellaswag-interval", type=int, default=0)
+    parser.add_argument("--hellaswag-limit", type=int, default=None)
     return parser.parse_args()
 
 
@@ -34,6 +35,8 @@ def main() -> None:
                 context_length=args.context_length,
                 total_batch_size=args.total_batch_size,
                 checkpoint_interval=args.checkpoint_interval,
+                hellaswag_interval=args.hellaswag_interval,
+                hellaswag_limit=args.hellaswag_limit,
                 resume=args.resume,
             ),
             ctx,

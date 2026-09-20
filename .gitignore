@@ -223,3 +223,9 @@ scratch/
 
 # ignore local experiment folder
 wandb
+
+# dataset
+data/*.npy
+
+# macOS junk
+.DS_Store

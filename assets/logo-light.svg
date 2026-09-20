@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Build-GPT-2">
+  <title>Build-GPT-2</title>
+  <!-- Causal attention mask: position t attends only to positions <= t.
+       The diagonal is the current token. -->
+  <g fill="#16292B">
+    <rect x="1.5" y="6.5" width="4" height="4"/>
+    <rect x="1.5" y="11.5" width="4" height="4"/>
+    <rect x="6.5" y="11.5" width="4" height="4"/>
+    <rect x="1.5" y="16.5" width="4" height="4"/>
+    <rect x="6.5" y="16.5" width="4" height="4"/>
+    <rect x="11.5" y="16.5" width="4" height="4"/>
+    <rect x="1.5" y="21.5" width="4" height="4"/>
+    <rect x="6.5" y="21.5" width="4" height="4"/>
+    <rect x="11.5" y="21.5" width="4" height="4"/>
+    <rect x="16.5" y="21.5" width="4" height="4"/>
+    <rect x="1.5" y="26.5" width="4" height="4"/>
+    <rect x="6.5" y="26.5" width="4" height="4"/>
+    <rect x="11.5" y="26.5" width="4" height="4"/>
+    <rect x="16.5" y="26.5" width="4" height="4"/>
+    <rect x="21.5" y="26.5" width="4" height="4"/>
+  </g>
+  <g fill="#12696D">
+    <rect x="1.5" y="1.5" width="4" height="4"/>
+    <rect x="6.5" y="6.5" width="4" height="4"/>
+    <rect x="11.5" y="11.5" width="4" height="4"/>
+    <rect x="16.5" y="16.5" width="4" height="4"/>
+    <rect x="21.5" y="21.5" width="4" height="4"/>
+    <rect x="26.5" y="26.5" width="4" height="4"/>
+  </g>
+</svg>

@@ -69,8 +69,4 @@ if token_count > 0:
 
     np.save(filename, shard[:token_count])
 
-    print(
-        f"saved {filename} | "
-        f"tokens={token_count:,} | "
-        f"bytes={shard[:token_count].nbytes:,}"
-    )
+    print(f"saved {filename} | tokens={token_count:,} | bytes={shard[:token_count].nbytes:,}")

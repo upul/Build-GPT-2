@@ -7,7 +7,8 @@ The implementation is inspired by Andrej Karpathy's `build-nanogpt` walkthrough 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo-light.svg" alt="Build-GPT-2 logo" width="120">
+    <source srcset="assets/logo-light.svg">
+    <img src="assets/logo.png" alt="Build-GPT-2 logo" width="120">
   </picture>
 </p>
 

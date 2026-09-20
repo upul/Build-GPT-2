@@ -1,6 +1,6 @@
 import os
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import torch
@@ -31,7 +31,7 @@ def save(
         "wandb_run_id": wandb_run_id,
     }
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     cp_dir = Path(checkpoint_dir)
     cp_dir.mkdir(parents=True, exist_ok=True)
     curr_checkpoint = cp_dir / f"checkpoint_{step}_{timestamp}.pt"
@@ -65,9 +65,7 @@ def load(
     cp = torch.load(latest_checkpoint, weights_only=False, map_location=device)
     # validate the model
     if cp["gpt_config"] != asdict(model.config):
-        raise ValueError(
-            "The loaded GPT configuration doesn't match with model's configuration"
-        )
+        raise ValueError("The loaded GPT configuration doesn't match with model's configuration")
     model.load_state_dict(cp["model"])
     if optimizer is not None:
         optimizer.load_state_dict(cp["optimizer"])

@@ -18,9 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--micro-batch-size", type=int, default=None)
     parser.add_argument("--context-length", type=int, default=None)
     parser.add_argument("--total-batch-size", type=int, default=None)
-    parser.add_argument(
-        "--resume", action=argparse.BooleanOptionalAction, default=False
-    )
+    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--checkpoint-dir", type=str, required=True)
     parser.add_argument("--checkpoint-interval", type=int, default=250)
     parser.add_argument("--hellaswag-interval", type=int, default=0)
@@ -67,9 +65,7 @@ def build_config(args: argparse.Namespace, stored: dict) -> TrainConfig:
         if cli_value is not None:
             kwargs[name] = cli_value
             if name in stored and stored[name] != cli_value:
-                print(
-                    f"overriding {name} from checkpoint: {stored[name]} -> {cli_value}"
-                )
+                print(f"overriding {name} from checkpoint: {stored[name]} -> {cli_value}")
         elif name in stored:
             kwargs[name] = stored[name]
 
@@ -81,16 +77,15 @@ def main() -> None:
     ctx = setup_distributed()
     wandb_run = None
     try:
-        wandb_run_id, stored_cfg = (
-            peek(args.checkpoint_dir) if args.resume else (None, {})
-        )
+        wandb_run_id, stored_cfg = peek(args.checkpoint_dir) if args.resume else (None, {})
         config = build_config(args, stored_cfg)
 
         if ctx.master and args.wandb_project is not None:
             if args.resume:
                 if wandb_run_id is None:
                     raise ValueError(
-                        "checkpoint was written without W&B and that resuming into a new run requires dropping --resume or omitting --wandb-project."
+                        "checkpoint was written without W&B, so there is no run to "
+                        "continue: drop --resume, or omit --wandb-project."
                     )
 
                 wandb_run = wandb.init(
@@ -100,9 +95,7 @@ def main() -> None:
                     resume="must",
                 )
             else:
-                wandb_run = wandb.init(
-                    project=args.wandb_project, config=asdict(config)
-                )
+                wandb_run = wandb.init(project=args.wandb_project, config=asdict(config))
 
         train(
             config,

@@ -15,7 +15,9 @@ dependencies = [
 [dependency-groups]
 dev = [
     "jupyter>=1.1.1",
+    "pre-commit>=4.6.2",
     "pytest>=9.1.1",
+    "ruff>=0.16.8",
 ]
 [build-system]
 requires = ["hatchling"]
@@ -23,3 +25,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/build_gpt2"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Notebooks are exploratory scratch, not shipped code.
+extend-exclude = ["notebooks", "scratch"]
+
+[tool.ruff.lint]
+# E/F  pyflakes + pycodestyle errors
+# I    import sorting
+# UP   pyupgrade (keep syntax current for the pinned Python)
+# B    bugbear (mutable defaults, loop-variable capture, ...)
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The pre-refactor monolith is kept verbatim as a reference implementation.
+"train_gpt.py" = ["ALL"]

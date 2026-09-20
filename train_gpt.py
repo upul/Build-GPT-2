@@ -47,9 +47,7 @@ class DataLoader:
     def reset(self):
         self.current_shard = 0
         self.tokens = load_tokens(self.shards[self.current_shard])
-        self.current_position = (
-            self.process_rank * self.batch_size * self.context_length
-        )
+        self.current_position = self.process_rank * self.batch_size * self.context_length
 
     def next_batch(self):
         B, T = self.batch_size, self.context_length
@@ -126,9 +124,7 @@ class CausalSelfAttention(nn.Module):
         # head_output = attn_scores @ V
 
         head_output = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
-        head_output = head_output.transpose(
-            1, 2
-        ).contiguous()  # [B, T, n_heads, D // n_heads]
+        head_output = head_output.transpose(1, 2).contiguous()  # [B, T, n_heads, D // n_heads]
         head_output = head_output.view(B, T, D)
 
         y = self.c_proj(head_output)
@@ -426,9 +422,7 @@ raw_model = model.module if ddp else model  #
 # Let's optimize it
 # optimizer = torch.optim.AdamW(model.parameters(), lr=6e-4, betas=(0.9, 0.95), eps=1e-8)
 print(f"[rank {ddp_rank}] creating optimizer", flush=True)
-optimizer = raw_model.configure_optimizers(
-    weight_decay=0.1, learning_rate=6e-4, device=device
-)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 print(f"[rank {ddp_rank}] optimizer ready", flush=True)
 
 for step in range(max_steps):
@@ -481,9 +475,7 @@ for step in range(max_steps):
                     topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
                     # select a token from the top-k probabilities
                     # note: multinomial does not demand the input to sum to 1
-                    ix = torch.multinomial(
-                        topk_probs, 1, generator=sample_rng
-                    )  # (B, 1)
+                    ix = torch.multinomial(topk_probs, 1, generator=sample_rng)  # (B, 1)
                     # gather the corresponding indices
                     xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
                     # append to the sequence
@@ -527,10 +519,7 @@ for step in range(max_steps):
     t_1 = time.perf_counter()
     dt = t_1 - t_0
     tokens_processed = (
-        train_loader.batch_size
-        * train_loader.context_length
-        * grad_accum_steps
-        * ddp_world_size
+        train_loader.batch_size * train_loader.context_length * grad_accum_steps * ddp_world_size
     )
     tokens_per_sec = tokens_processed / dt
     if master_process:

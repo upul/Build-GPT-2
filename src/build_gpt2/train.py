@@ -7,7 +7,6 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-import wandb
 from wandb import Run
 
 from .checkpoint import load, save
@@ -66,18 +65,14 @@ def evaluate(
     return loss_accum
 
 
-def train(
-    config: TrainConfig, ctx: DistributedContext, wandb_run: Run | None = None
-) -> None:
+def train(config: TrainConfig, ctx: DistributedContext, wandb_run: Run | None = None) -> None:
     torch.manual_seed(config.seed)
     if ctx.device.startswith("cuda"):
         torch.cuda.manual_seed(config.seed)
     elif ctx.device == "mps":
         torch.mps.manual_seed(config.seed)
 
-    if config.total_batch_size % (
-        config.micro_batch_size * config.context_length * ctx.world_size
-    ):
+    if config.total_batch_size % (config.micro_batch_size * config.context_length * ctx.world_size):
         raise ValueError("total_batch_size must be divisible by B*T*world_size")
 
     grad_accum_steps = config.total_batch_size // (
@@ -153,9 +148,7 @@ def train(
                     wandb_run.log({"val/loss": val_loss.item()}, step=step)
 
         # Use the raw model for master-only generation so no DDP collectives are required.
-        if ctx.master and (
-            (step > 0 and step % config.generate_interval == 0) or last_step
-        ):
+        if ctx.master and ((step > 0 and step % config.generate_interval == 0) or last_step):
             raw_model.eval()
             generated = generate_top_k(
                 raw_model,
@@ -177,9 +170,7 @@ def train(
             and (hellaswag_eval is not None)
             and ((step > 0 and step % config.hellaswag_interval == 0) or last_step)
         ):
-            eval_result = hellaswag_eval.evaluate(
-                raw_model, tokenizer, ctx.device, verbose=False
-            )
+            eval_result = hellaswag_eval.evaluate(raw_model, tokenizer, ctx.device, verbose=False)
             print(f"hellaswag eval result: {eval_result}")
             if wandb_run is not None:
                 wandb_run.log(
@@ -248,9 +239,7 @@ def train(
                     step=step,
                 )
 
-        if (
-            (step > 0 and step % config.checkpoint_interval == 0) or last_step
-        ) and ctx.master:
+        if ((step > 0 and step % config.checkpoint_interval == 0) or last_step) and ctx.master:
             print(f"saving checkpoint at {step} step")
             save(
                 step=step,

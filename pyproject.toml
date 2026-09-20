@@ -31,6 +31,11 @@ line-length = 100
 target-version = "py312"
 # Notebooks are exploratory scratch, not shipped code.
 extend-exclude = ["notebooks", "scratch"]
+# Resolve first-party modules from src/ only. The default also scans the repo
+# root, where runtime output directories (wandb/, data/, checkpoints/) would
+# shadow same-named packages and make import grouping depend on what happens to
+# be on disk -- so a clean CI checkout disagreed with a working tree.
+src = ["src"]
 
 [tool.ruff.lint]
 # E/F  pyflakes + pycodestyle errors
@@ -38,6 +43,9 @@ extend-exclude = ["notebooks", "scratch"]
 # UP   pyupgrade (keep syntax current for the pinned Python)
 # B    bugbear (mutable defaults, loop-variable capture, ...)
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["build_gpt2"]
 
 [tool.ruff.lint.per-file-ignores]
 # The pre-refactor monolith is kept verbatim as a reference implementation.

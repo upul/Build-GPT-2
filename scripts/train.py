@@ -3,6 +3,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import wandb
+
 from build_gpt2.checkpoint import peek
 from build_gpt2.distributed import cleanup_distributed, setup_distributed
 from build_gpt2.train import TrainConfig, train

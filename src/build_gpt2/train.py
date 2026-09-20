@@ -7,6 +7,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+import wandb
 from wandb import Run
 
 from .checkpoint import load, save
@@ -38,7 +39,7 @@ class TrainConfig:
     checkpoint_interval: int = 250
     hellaswag_interval: int = 0
     hellaswag_limit: int | None = None
-    checkpoint_dir: str = "./checkpoints"
+    checkpoint_dir: str | None = None
     seed: int = 1337
 
 
@@ -148,6 +149,8 @@ def train(
             val_loss = evaluate(model, val_loader, val_steps=config.val_steps, ctx=ctx)
             if ctx.master:
                 print(f"validation loss: {val_loss.item():.4f}")
+                if wandb_run is not None:
+                    wandb_run.log({"val/loss": val_loss.item()}, step=step)
 
         # Use the raw model for master-only generation so no DDP collectives are required.
         if ctx.master and (
@@ -177,8 +180,16 @@ def train(
             eval_result = hellaswag_eval.evaluate(
                 raw_model, tokenizer, ctx.device, verbose=False
             )
-            # TODO: (We need to correctly log the performance)
             print(f"hellaswag eval result: {eval_result}")
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        "hellaswag/n": eval_result["n"],
+                        "hellaswag/acc": eval_result["acc"],
+                        "hellaswag/acc_norm": eval_result["acc_norm"],
+                    },
+                    step=step,
+                )
 
         # Now we start training
         model.train()
@@ -227,11 +238,11 @@ def train(
             if wandb_run is not None:
                 wandb_run.log(
                     {
-                        "train/loss": round(loss_accum.item(), 5),
+                        "train/loss": loss_accum.item(),
                         "train/lr": lr,
-                        "train/norm": round(norm.item(), 4),
+                        "train/norm": norm.item(),
                         "train/step_time_ms": dt * 1000,
-                        "train/token_per_sec": round(tokens_per_sec, 4),
+                        "train/token_per_sec": tokens_per_sec,
                         "train/tokens": step * config.total_batch_size,
                     },
                     step=step,
@@ -250,4 +261,5 @@ def train(
                 curr_shard=train_loader.current_shard,
                 curr_position=train_loader.current_position,
                 checkpoint_dir=config.checkpoint_dir,
+                wandb_run_id=wandb_run.id if wandb_run is not None else None,
             )

@@ -17,6 +17,8 @@ def save(
     curr_shard: int,
     curr_position: int,
     checkpoint_dir: str,
+    wandb_run_id: str | None = None,
+    replace_old_cp: bool = True,
 ):
     checkpoint = {
         "step": step,
@@ -26,6 +28,7 @@ def save(
         "gpt_config": gpt_config,
         "curr_shard": curr_shard,
         "curr_position": curr_position,
+        "wandb_run_id": wandb_run_id,
     }
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -36,6 +39,12 @@ def save(
 
     torch.save(checkpoint, curr_checkpoint_tmp)
     os.replace(curr_checkpoint_tmp, curr_checkpoint)
+
+    # Delete all older checkpoints
+    if replace_old_cp:
+        for checkpoint_path in cp_dir.glob("checkpoint_*.pt"):
+            if checkpoint_path != curr_checkpoint:
+                checkpoint_path.unlink()
 
 
 def load(
@@ -50,13 +59,7 @@ def load(
     ``optimizer`` and ``token_loader`` are optional so an evaluation-only caller
     can load weights without constructing them.
     """
-    checkpoints = list(Path(checkpoint_dir).glob("*.pt"))
-    if len(checkpoints) == 0:
-        raise FileNotFoundError(
-            f"No checkpoints are available at {checkpoint_dir}. Hence, can't load the model."
-        )
-
-    latest_checkpoint = max(checkpoints, key=lambda path: int(path.name.split("_")[1]))
+    latest_checkpoint = _read_latest_checkpoint(checkpoint_dir)
 
     # loading the checkpoint
     cp = torch.load(latest_checkpoint, weights_only=False, map_location=device)
@@ -75,3 +78,27 @@ def load(
         )
 
     return cp["step"] + 1
+
+
+def peek(checkpoint_dir: str) -> tuple[str | None, dict]:
+    """Read a checkpoint's metadata without building a model or optimizer.
+
+    Returns the W&B run id (``None`` if the run was trained without W&B) and the
+    ``TrainConfig`` the checkpoint was written with, so a resume can restore the
+    original hyperparameters instead of relying on the caller to retype them.
+    """
+    latest_checkpoint = _read_latest_checkpoint(checkpoint_dir)
+
+    # loading the checkpoint
+    cp = torch.load(latest_checkpoint, weights_only=False, map_location="cpu")
+    return cp.get("wandb_run_id"), cp.get("train_cfg", {})
+
+
+def _read_latest_checkpoint(checkpoint_dir: str) -> Path:
+    checkpoints = list(Path(checkpoint_dir).glob("*.pt"))
+    if len(checkpoints) == 0:
+        raise FileNotFoundError(
+            f"No checkpoints are available at {checkpoint_dir}. Hence, can't load the model."
+        )
+
+    return max(checkpoints, key=lambda path: int(path.name.split("_")[1]))

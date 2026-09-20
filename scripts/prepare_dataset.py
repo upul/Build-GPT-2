@@ -3,7 +3,7 @@ import tiktoken
 from datasets import load_dataset
 
 SHARD_SIZE = 100_000_000
-MAX_TOKENS = 1_100_000_000  # 100M validation + 1B training
+MAX_TOKENS = 2_600_000_000  # 100M validation + 2.5B training
 DATA_FOLDER = "./data"
 
 dataset = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
@@ -40,7 +40,7 @@ for data in dataset:
         if token_count == SHARD_SIZE:
             split = "val" if shard_index == 0 else "train"
             filename = f"fineweb_{split}_{shard_index:06d}.npy"
-            np.save(filename, shard)
+            np.save(f"{DATA_FOLDER}/{filename}", shard)
 
             print(f"saved {filename} | tokens={SHARD_SIZE:,} | bytes={shard.nbytes:,}")
             shard_index += 1

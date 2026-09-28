@@ -229,3 +229,6 @@ data/*.npy
 
 # macOS junk
 .DS_Store
+
+# exported Hugging Face model directory
+hf-export/

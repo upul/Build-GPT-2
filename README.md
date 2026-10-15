@@ -95,16 +95,6 @@ The number that counts is the end-of-run evaluation on the full 10,042-example s
 Throughput held flat at ~256k tokens/s with no thermal drift, punctuated by 24 evenly spaced
 dips to ~40k. Those are shard boundaries.
 
-Each shard holds 100M tokens and a step consumes 524,288, so one shard lasts about 191 steps.
-The run is 4,730 steps long, which crosses 24 of them — and the spacing between the dips in the
-log is exactly 190 or 191 steps, with no exceptions. On the crossing step the data loader calls
-`load_tokens` to read the next 200 MB `.npy` file, and that read happens inside the training
-loop, so all four ranks sit idle until it finishes: 2.0s for a normal step, 12.3s for a crossing.
-
-The 24 stalls cost about 10s each over a normal step, 4.5 minutes in total, or **2.7% of wall
-time** — small enough to leave alone here, and an obvious place for a background prefetch if it
-ever matters.
-
 ### Generated samples
 
 Greedy-free top-k sampling from the same prompt at three points in the run, taken verbatim from

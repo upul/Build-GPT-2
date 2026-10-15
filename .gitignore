@@ -232,3 +232,6 @@ data/*.npy
 
 # exported Hugging Face model directory
 hf-export/
+
+# Local run artifacts (checkpoints, logs, archives for upload)
+workspace/

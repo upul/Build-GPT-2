@@ -21,8 +21,6 @@ The implementation is inspired by Andrej Karpathy's `build-nanogpt` walkthrough 
 ## What this project demonstrates
 
 - GPT-2-style decoder-only Transformer implemented from scratch
-- GPT-2 weight tying and initialization
-- PyTorch scaled dot-product attention (`scaled_dot_product_attention`)
 - FineWeb-Edu data stored as pre-tokenized NumPy shards
 - Rank-aware multi-GPU data loading
 - DistributedDataParallel + NCCL
@@ -34,7 +32,6 @@ The implementation is inspired by Andrej Karpathy's `build-nanogpt` walkthrough 
 - Crash-safe checkpointing with exact resume (optimizer state, LR schedule position, data loader position)
 - HellaSwag evaluation with `acc` / `acc_norm`, validated against GPT-2 124M
 - Optional Weights & Biases logging that survives a resume as a single run
-- Unit tests for model shapes, LR scheduling, and data partitioning
 
 ## Results
 
@@ -62,9 +59,6 @@ numbers are the same measurement, so the comparison is meaningful.
 | **This run** | **27.07%** | **27.00%** | 2.48B |
 | OpenAI GPT-2 124M | 28.58% | 29.55% | ~100B |
 
-The useful reading is not "below GPT-2" but the ratio: **44% of the achievable gap closed on
-2.5% of the training tokens.** Capability improves roughly logarithmically with data, so the
-remaining 2.5 points are far more expensive than the first 2.
 
 <p align="center">
   <picture>
@@ -83,19 +77,13 @@ tokens of unique data the model sees each example roughly once, so there is noth
   </picture>
 </p>
 
-HellaSwag is worth reading carefully. It rises over the first ~0.5B tokens and then sits between
-26.1% and 26.9% for the remaining 80% of training, while validation loss keeps falling from 3.67
-to 3.28. Two things are going on: the metric's entire dynamic range at this scale is 4.55 points
-wide (chance to GPT-2), and each in-training point is measured on 1,000 examples, giving a 95%
-interval of ±2.7 points. Movement after the first thousand steps is mostly inside the noise.
+These in-training points are a 1,000-example sample (`--hellaswag-limit 1000`), taken every 500
+steps to keep evaluation cheap. At that sample size a single point carries roughly ±2.7 points of
+error, so the flat stretch after ~0.5B tokens should not be read as the model having stopped
+learning — validation loss keeps falling from 3.67 to 3.28 over the same span.
 
-The lesson is to steer on validation loss and treat HellaSwag as an end-of-run check, not a
-training signal.
-
-One incidental observation: for GPT-2, `acc_norm` sits a full point above `acc`, whereas here
-the two are within 0.07 points of each other. Length normalization recovers signal when the
-per-token likelihoods are already well ordered; an under-trained model gives it less to work
-with.
+The number that counts is the end-of-run evaluation on the full 10,042-example split: **27.00%
+`acc_norm`**. Steer on validation loss during training; run the full split when it ends.
 
 <p align="center">
   <picture>
@@ -104,12 +92,18 @@ with.
   </picture>
 </p>
 
-Throughput held flat at ~256k tokens/s with no thermal drift, punctuated by 24 dips to ~40k.
-Those are not noise: each shard holds 100M tokens and a step consumes 524,288, so the loader
-crosses a shard boundary every 190.7 steps and calls `load_tokens` to read the next 200 MB
-`.npy` file synchronously inside the training loop. A normal step takes 2.0s; a shard-crossing
-step takes 12.3s. Across the run that is 4.5 minutes, or **2.7% of wall time** — small enough to
-leave alone here, and an obvious place for a background prefetch if it ever matters.
+Throughput held flat at ~256k tokens/s with no thermal drift, punctuated by 24 evenly spaced
+dips to ~40k. Those are shard boundaries.
+
+Each shard holds 100M tokens and a step consumes 524,288, so one shard lasts about 191 steps.
+The run is 4,730 steps long, which crosses 24 of them — and the spacing between the dips in the
+log is exactly 190 or 191 steps, with no exceptions. On the crossing step the data loader calls
+`load_tokens` to read the next 200 MB `.npy` file, and that read happens inside the training
+loop, so all four ranks sit idle until it finishes: 2.0s for a normal step, 12.3s for a crossing.
+
+The 24 stalls cost about 10s each over a normal step, 4.5 minutes in total, or **2.7% of wall
+time** — small enough to leave alone here, and an obvious place for a background prefetch if it
+ever matters.
 
 ### Generated samples
 
@@ -132,30 +126,44 @@ These are representative rather than selected: `scripts/train.py` prints three s
 steps, and the full set is in the training log. A 124M model trained on 2.5B tokens produces
 fluent but unreliable text, and these are a fair picture of it.
 
-## Repository layout
+## Trained weights and logs
 
-```text
-.
-├── scripts/
-│   ├── prepare_dataset.py  # stream FineWeb-Edu into token shards
-│   ├── check_shards.py     # dataset integrity checks
-│   ├── train.py            # CLI entry point
-│   └── eval_hellaswag.py   # score a checkpoint or GPT-2 on HellaSwag
-├── src/build_gpt2/
-│   ├── model.py            # GPTConfig, attention, MLP, blocks, GPT
-│   ├── data.py             # rank-aware shard loader
-│   ├── distributed.py      # DDP/NCCL setup and cleanup
-│   ├── optim.py            # AdamW parameter grouping
-│   ├── scheduler.py        # warmup + cosine decay
-│   ├── generation.py       # top-k autoregressive generation
-│   ├── checkpoint.py       # atomic save + resume
-│   ├── hellaswag.py        # cached HellaSwag scoring
-│   └── train.py            # validation and training orchestration
-└── tests/
-    ├── test_model.py
-    ├── test_data.py
-    └── test_scheduler.py
+The final checkpoint and the complete training log are on Google Drive:
+
+**[Build-GPT-2 — checkpoint and log](https://drive.google.com/drive/folders/148UIrvQ6B2P4qLE4NrvaNQxO_gQIDrT1?usp=sharing)**
+
+| File | Size | Contents |
+| --- | --- | --- |
+| `checkpoints/checkpoint_4729_20260929-164231.pt` | 1.39 GiB | step 4,729 — weights, optimizer state, loader position, both configs |
+| `train.log` | 4,941 lines | every step, all validation and HellaSwag evaluations, all generated samples |
+
+The checkpoint is a full training state, not just weights, so it can be resumed as well as
+loaded. Put it in a directory of its own and point `--checkpoint-dir` at it:
+
+```bash
+uv run torchrun --standalone --nproc_per_node=4 scripts/train.py \
+  --data-root /workspace/data \
+  --checkpoint-dir ./checkpoints \
+  --resume
 ```
+
+For inference, convert it to Hugging Face layout instead — this needs no GPU and no dataset:
+
+```bash
+uv run python scripts/export_hf.py --checkpoint-dir ./checkpoints --out ./hf-export
+```
+
+Verify the download before loading it:
+
+```bash
+shasum -a 256 checkpoint_4729_20260929-164231.pt
+# 9cbda1ecb673ec8cbd2ce56e371a636f5bfbc5b26164cfdd1c455bf1b9747fee
+```
+
+> [!NOTE]
+> A `.pt` file is a Python pickle, and this repo loads it with `weights_only=False` because it
+> stores dataclass configs alongside the tensors. Loading a pickle runs code inside it, so check
+> the hash above — and apply the same caution to checkpoints from anyone else.
 
 ## Setup with uv
 
@@ -444,10 +452,7 @@ uv run pytest -q
 
 ## Notes
 
-This repository intentionally stays small. It is meant to make the training mechanics easy to
-inspect rather than hide them behind a framework.
-
-Known limitations, stated plainly:
+Known limitations:
 
 - **Only the newest checkpoint is kept.** Each save deletes its predecessors, so rolling back to
   an earlier step after a divergence is not possible.

@@ -18,7 +18,7 @@ The implementation is inspired by Andrej Karpathy's `build-nanogpt` walkthrough 
   GPT-2 124M from scratch in PyTorch, trained on FineWeb-Edu with multi-GPU DDP.
 </p>
 
-## What this project demonstrates
+## What's implemented
 
 - GPT-2-style decoder-only Transformer implemented from scratch
 - FineWeb-Edu data stored as pre-tokenized NumPy shards
@@ -125,7 +125,7 @@ The final checkpoint and the complete training log are on Google Drive:
 | File | Size | Contents |
 | --- | --- | --- |
 | `checkpoints/checkpoint_4729_20260929-164231.pt` | 1.39 GiB | step 4,729 — weights, optimizer state, loader position, both configs |
-| `train.log` | 4,941 lines | every step, all validation and HellaSwag evaluations, all generated samples |
+| `train.log.zip` | 104 KiB (4,941 lines) | every step, all validation and HellaSwag evaluations, all generated samples |
 
 The checkpoint is a full training state, not just weights, so it can be resumed as well as
 loaded. Put it in a directory of its own and point `--checkpoint-dir` at it:
